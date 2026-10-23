@@ -32,16 +32,10 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS users
                    premium_until TEXT DEFAULT NULL,
                    ai_mode TEXT DEFAULT 'v3',
                    notified_expired INTEGER DEFAULT 0)''')
-# Agar eski bazada 'notified_expired' ustuni bo'lmasa, qo'shamiz
-cursor.execute("PRAGMA table_info(users)")
-columns = [info[1] for info in cursor.fetchall()]
-if 'notified_expired' not in columns:
-    cursor.execute("ALTER TABLE users ADD COLUMN notified_expired INTEGER DEFAULT 0")
 conn.commit()
 
 user_contexts = {}
 
-# --- HOLATLAR (FSM) ---
 class PremiumState(StatesGroup):
     waiting_for_receipt = State()
 
@@ -68,17 +62,17 @@ def split_message(text, limit=4000):
     return [text[i:i+limit] for i in range(0, len(text), limit)]
 
 def get_main_inline_kb(ai_mode, is_prem):
-    mode_text = "🧠 Rejim: Aqlli (R1)" if ai_mode == 'r1' else "🤖 Rejim: Oddiy (V3)"
+    mode_text = "🧠 Aqlli (R1)" if ai_mode == 'r1' else "⚡️ Oddiy (V3)"
     prem_btn_text = "💎 Premium: Faol ✅" if is_prem else "💎 Premium olish"
     
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🧹 Suhbatni tozalash", callback_data="clear_chat"),
-         InlineKeyboardButton(text=mode_text, callback_data="switch_mode")],
+        [InlineKeyboardButton(text="🧹 Tozalash", callback_data="clear_chat"),
+         InlineKeyboardButton(text=f"Rejim: {mode_text}", callback_data="switch_mode")],
         [InlineKeyboardButton(text=prem_btn_text, callback_data="get_premium"),
-         InlineKeyboardButton(text="🌐 Muallif haqida", url=WEBSITE_URL)]
+         InlineKeyboardButton(text="🌐 Muallif", url=WEBSITE_URL)]
     ])
 
-# --- START BUYRUG'I ---
+# --- START BUYRUG'I (Zamonaviy dizayn) ---
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     user_id = message.from_user.id
@@ -86,17 +80,18 @@ async def cmd_start(message: Message):
     _, _, premium_until, ai_mode = get_user_data(user_id)
     is_prem = is_premium(premium_until)
     
-    # Premium holatiga qarab matn
-    status_text = "💎 <b>Sizda Premium faol!</b> Cheksiz savol bering." if is_prem else "⚠️ <i>Har kuni 3 ta bepul savol. Cheksizlik uchun Premium oling.</i>"
+    if is_prem:
+        status_text = "┌ 💎 <b>Status:</b> PREMIUM (Cheksiz)\n└ <i>Barcha imkoniyatlar ochiq!</i>"
+    else:
+        status_text = "┌ 🆓 <b>Status:</b> BEPUL REJIM\n└ <i>Kuniga 3 ta savol berishingiz mumkin</i>"
     
     text = (
-        f"Assalomu alaykum, <b>{message.from_user.first_name}</b>! 👋\n\n"
-        "Men <b>MILLIY AI</b> man — sizning shaxsiy va aqlli yordamchingizman. 🧠✨\n\n"
-        "Menda 2 xil aql rejimi bor:\n"
-        "⚡️ <b>Oddiy rejim (V3)</b> — tezkor javoblar.\n"
-        "🧠 <b>Aqlli rejim (R1)</b> — murakkab kod va matematikani o'ylab yechadi.\n\n"
+        f"<b>Assalomu alaykum, {message.from_user.first_name}!</b> 👋\n\n"
+        "🤖 Men <b>MILLIY AI</b> — O'zbek tilidagi eng ilg'or sun'iy intellektman.\n\n"
+        "<blockquote>⚡️ <b>V3 Rejim:</b> Kundalik savollar, matn va tarjima uchun tezkor javoblar.\n"
+        "🧠 <b>R1 Rejim:</b> Murakkab kod, matematika va mantiqiy savollar uchun chuqur o'ylash.</blockquote>\n\n"
         f"{status_text}\n\n"
-        "👇 Boshlash uchun shunchaki savolingizni yozing!"
+        "👇 <i>Boshlash uchun shunchaki savolingizni yozing!</i>"
     )
     
     kb = get_main_inline_kb(ai_mode, is_prem)
@@ -111,38 +106,11 @@ async def cmd_start(message: Message):
         
     await message.answer(text, parse_mode="HTML", reply_markup=kb)
 
-# --- ADMIN BUYRUQLARI ---
-@dp.message(Command("admin"))
-async def cmd_admin(message: Message):
-    if message.from_user.id != ADMIN_ID: return
-    cursor.execute("SELECT COUNT(*) FROM users")
-    total_users = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM users WHERE premium_until >= ?", (datetime.date.today().strftime("%Y-%m-%d"),))
-    prem_users = cursor.fetchone()[0]
-    
-    text = (
-        "👨‍💻 <b>Admin Panel</b>\n\n"
-        f"👥 Jami foydalanuvchilar: <b>{total_users}</b> ta\n"
-        f"💎 Premium foydalanuvchilar: <b>{prem_users}</b> ta\n"
-        "Tizim holati: <b>Ishlayapti ✅</b>"
-    )
-    await message.answer(text, parse_mode="HTML")
-
-@dp.message(Command("setbanner"))
-async def set_banner(message: Message):
-    if message.from_user.id != ADMIN_ID: return
-    if not message.photo:
-        await message.answer("⚠️ Rasmni yuborib, izohiga `/setbanner` deb yozing.")
-        return
-    with open(BANNER_FILE, 'w') as f:
-        f.write(message.photo[-1].file_id)
-    await message.answer("✅ MILLIY AI banneri muvaffaqiyatli saqlandi!")
-
-# --- TUGMALAR HANDLERI ---
+# --- TUGMALAR ---
 @dp.callback_query(F.data == "clear_chat")
 async def clear_context(callback: CallbackQuery):
     user_contexts[callback.from_user.id] = []
-    await callback.answer("✅ Suhbat tarixi tozalandi! Yangi mavzuda gaplashamiz.", show_alert=True)
+    await callback.answer("✅ Suhbat tarixi tozalandi. Yangi mavzuda gaplashamiz!", show_alert=True)
 
 @dp.callback_query(F.data == "switch_mode")
 async def switch_mode(callback: CallbackQuery):
@@ -155,10 +123,10 @@ async def switch_mode(callback: CallbackQuery):
     
     is_prem = is_premium(premium_until)
     await callback.message.edit_reply_markup(reply_markup=get_main_inline_kb(new_mode, is_prem))
-    mode_name = "Aqlli (R1)" if new_mode == 'r1' else "Oddiy (V3)"
+    mode_name = "Aqlli (R1) 🧠" if new_mode == 'r1' else "Oddiy (V3) ⚡️"
     await callback.answer(f"Rejim o'zgardi: {mode_name}")
 
-# --- PREMIUM SOTIB OLISH JARAYONI ---
+# --- PREMIUM (Dizayn yangilandi) ---
 @dp.callback_query(F.data == "get_premium")
 async def get_premium(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
@@ -169,30 +137,27 @@ async def get_premium(callback: CallbackQuery, state: FSMContext):
         return
 
     text = (
-        "💎 <b>MILLIY AI Premium (1 oylik)</b>\n\n"
-        "Premium orqali siz <b>cheksiz</b> savol berishingiz va ikkala rejimdan ham to'liq foydalanishingiz mumkin.\n\n"
-        "💰 <b>Tarif narxi:</b>\n"
+        "💎 <b>MILLIY AI PREMIUM</b> 💎\n\n"
+        "Premium orqali cheksiz savol bering va barcha rejimlardan to'liq foydalaning.\n\n"
+        "<blockquote>💰 <b>1 oylik tarif narxi:</b>\n"
         "🇺🇿 Uzcard: <b>23,000 so'm</b>\n"
-        "💳 Visa: <b>2$</b>\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
+        "💳 Visa: <b>2$</b></blockquote>\n\n"
         "🏦 <b>To'lov uchun rekvizitlar:</b>\n"
-        "💳 <b>Uzcard:</b> <code>5614 6818 5290 5201</code>\n"
-        "💳 <b>Visa:</b> <code>4231 2000 9704 3946</code>\n"
-        "(Jasurbek T.)\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📸 To'lovni amalga oshirib, <b>chekni (skrinshotni) shu chatga rasm qilib yuboring</b>.\n"
-        "Admin tasdiqlagach, obunangiz avtomatik 30 kunga faollashadi."
+        "├ <b>Uzcard:</b> <code>5614 6818 5290 5201</code>\n"
+        "└ <b>Visa:</b> <code>4231 2000 9704 3946</code>\n"
+        "👤 <i>Jasurbek T.</i>\n\n"
+        "📸 <b>Qanday to'lanadi?</b>\n"
+        "To'lovni amalga oshirib, <b>chekni (skrinshotni) shu chatga rasm qilib yuboring</b>.\n"
+        "Admin tasdiqlagach, obunangiz avtomatik 30 kunga faollashadi. ✅"
     )
     await callback.message.answer(text, parse_mode="HTML")
     await state.set_state(PremiumState.waiting_for_receipt)
     await callback.answer()
 
-# Chekni qabul qilish va adminga yuborish
 @dp.message(PremiumState.waiting_for_receipt, F.photo)
 async def handle_receipt(message: Message, state: FSMContext):
     user_id = message.from_user.id
     username = message.from_user.username or "Noma'lum"
-    photo_id = message.photo[-1].file_id
     
     admin_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"approve_{user_id}"),
@@ -201,24 +166,18 @@ async def handle_receipt(message: Message, state: FSMContext):
     
     await bot.send_photo(
         chat_id=ADMIN_ID,
-        photo=photo_id,
-        caption=f"💰 <b>Yangi Premium to'lov!</b>\n\n"
-                f"👤 Mijoz: @{username}\n"
-                f"🆔 ID: <code>{user_id}</code>\n\n"
-                f"Iltimos, chekni tekshiring va tasdiqlang.",
+        photo=message.photo[-1].file_id,
+        caption=f"💰 <b>Yangi Premium to'lov!</b>\n\n👤 Mijoz: @{username}\n🆔 ID: <code>{user_id}</code>\n\n<i>Chekni tekshirib, tasdiqlang.</i>",
         reply_markup=admin_kb,
         parse_mode="HTML"
     )
     
-    await message.answer("⏳ <b>Chekingiz qabul qilindi!</b>\n\nAdmin tasdiqlashi bilan obunangiz faollashadi. Odatda bu 1-5 daqiqa vaqt oladi.")
+    await message.answer("⏳ <b>Chekingiz qabul qilindi!</b>\n\nAdmin tasdiqlashi bilan obunangiz faollashadi. Odatda bu 1-5 daqiqa vaqt oladi.", parse_mode="HTML")
     await state.clear()
 
-# Admin Tasdiqlashi
 @dp.callback_query(F.data.startswith("approve_"))
 async def approve_payment(callback: CallbackQuery):
     user_id = int(callback.data.split("_")[1])
-    
-    # 30 kunlik premium berish
     premium_until = (datetime.date.today() + datetime.timedelta(days=30)).strftime("%Y-%m-%d")
     cursor.execute("UPDATE users SET premium_until = ?, daily_count = 0, notified_expired = 0 WHERE user_id = ?", (premium_until, user_id))
     conn.commit()
@@ -236,7 +195,6 @@ async def approve_payment(callback: CallbackQuery):
     except: pass
     await callback.answer("Mijozga Premium berildi!")
 
-# Admin Rad etishi
 @dp.callback_query(F.data.startswith("reject_"))
 async def reject_payment(callback: CallbackQuery):
     user_id = int(callback.data.split("_")[1])
@@ -246,12 +204,11 @@ async def reject_payment(callback: CallbackQuery):
     except: pass
     await callback.answer("Rad etildi!")
 
-# --- AI MULOQOTI ---
+# --- AI MULOQOTI (Premium Dizayn) ---
 @dp.message(F.text)
 async def handle_ai(message: Message):
     user_id = message.from_user.id
-    if user_id not in user_contexts:
-        user_contexts[user_id] = []
+    if user_id not in user_contexts: user_contexts[user_id] = []
 
     today = datetime.date.today().strftime("%Y-%m-%d")
     last_date, daily_count, premium_until, ai_mode = get_user_data(user_id)
@@ -262,14 +219,12 @@ async def handle_ai(message: Message):
         conn.commit()
         daily_count = 0
 
-    # Limit tekshiruvi (Bepul foydalanuvchilar uchun 3 ta)
     if not is_prem and daily_count >= 3:
         await message.answer(
             "⚠️ <b>Kunlik 3 ta bepul limitingiz tugadi!</b>\n\n"
             "Yana savol berish uchun Premium oling yoki ertaga qayta urinib ko'ring.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="💎 Premium olish (23,000 so'm)", callback_data="get_premium")]
-            ]), parse_mode="HTML"
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💎 Premium olish", callback_data="get_premium")]]), 
+            parse_mode="HTML"
         )
         return
 
@@ -277,16 +232,20 @@ async def handle_ai(message: Message):
         cursor.execute("UPDATE users SET daily_count = daily_count + 1 WHERE user_id = ?", (user_id,))
         conn.commit()
 
-    await bot.send_chat_action(chat_id=message.chat.id, action="typing")
+    # R1 rejimida "O'ylanmoqda" xabarini chiqarish
+    thinking_msg = None
+    if ai_mode == 'r1':
+        thinking_msg = await message.answer("🧠 <b>MILLIY AI o'ylanmoqda...</b> (Bu biroz vaqt olishi mumkin)", parse_mode="HTML")
+    else:
+        await bot.send_chat_action(chat_id=message.chat.id, action="typing")
     
     try:
         model_name = "deepseek-reasoner" if ai_mode == 'r1' else "deepseek-chat"
-        
         system_prompt = (
             "Sen MILLIY AI'san. O'zbek tilida, do'stona va tushunarli tarzda javob berasan. "
             "Kod yozganda chiroyli Markdown formatida yozasan. "
-            "Agar foydalanuvchi sendan 'Seni kim yaratgan?', 'Muallifing kim?' yoki shunga o'xshash savol so'rasa, "
-            "seni Jasurbek Turayev yaratganini aytasan va uning shaxsiy veb-sayti: [jasurbekturaev.com](https://jasurbekturaev.com/) ekanligini ta'kidlaysan."
+            "Agar foydalanuvchi sendan 'Seni kim yaratgan?', 'Muallifing kim?' deb so'rasa, "
+            "seni Jasurbek Turayev yaratganini aytasan va uning veb-sayti: [jasurbekturaev.com](https://jasurbekturaev.com/) ekanligini ta'kidlaysan."
         )
 
         messages = [{"role": "system", "content": system_prompt}]
@@ -294,10 +253,7 @@ async def handle_ai(message: Message):
         messages.append({"role": "user", "content": message.text})
         
         response = await client.chat.completions.create(
-            model=model_name,
-            messages=messages,
-            max_tokens=3000,
-            temperature=0.7
+            model=model_name, messages=messages, max_tokens=3000, temperature=0.7
         )
         
         ai_reply = response.choices[0].message.content
@@ -306,9 +262,13 @@ async def handle_ai(message: Message):
         user_contexts[user_id].append({"role": "user", "content": message.text})
         user_contexts[user_id].append({"role": "assistant", "content": ai_reply})
         
+        # O'ylanmoqda xabarini o'chirish
+        if thinking_msg:
+            await thinking_msg.delete()
+        
+        # Javobni chiroyli formatda yuborish
         if len(ai_reply) > 4000:
-            chunks = split_message(ai_reply)
-            for chunk in chunks:
+            for chunk in split_message(ai_reply):
                 await message.answer(chunk, parse_mode="Markdown")
                 await asyncio.sleep(0.5)
         else:
@@ -316,49 +276,16 @@ async def handle_ai(message: Message):
             
         if not is_prem and daily_count < 2:
             left = 3 - (daily_count + 1)
-            await message.answer(f"ℹ️ <i>Sizda bugun uchun yana {left} ta bepul savol qoldi.</i>", parse_mode="HTML")
+            await message.answer(f"<blockquote>ℹ️ <i>Sizda bugun uchun yana {left} ta bepul savol qoldi.</i></blockquote>", parse_mode="HTML")
         
     except Exception as e:
+        if thinking_msg: await thinking_msg.delete()
         logging.error(f"Xatolik: {e}")
-        await message.answer(f"❌ Xatolik yuz berdi: {str(e)}")
-
-# --- ORQA FONDA ISHLAYDIGAN TEKSHIRUV (Obuna tugashini bildirish) ---
-async def check_expirations(bot: Bot):
-    while True:
-        try:
-            today = datetime.date.today().strftime("%Y-%m-%d")
-            # Muddati o'tgan va hali xabar yuborilmaganlarni topamiz
-            cursor.execute("SELECT user_id FROM users WHERE premium_until < ? AND notified_expired = 0", (today,))
-            expired_users = cursor.fetchall()
-            
-            for user in expired_users:
-                user_id = user[0]
-                try:
-                    await bot.send_message(
-                        chat_id=user_id,
-                        text="⚠️ <b>Diqqat!</b>\n\nSizning <b>MILLIY AI Premium</b> obunangiz muddati tugadi.\n\n"
-                             "Xizmatdan cheksiz foydalanishni davom ettirish uchun obunani yangilang.",
-                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                            [InlineKeyboardButton(text="💎 Obunani yangilash", callback_data="get_premium")]
-                        ])
-                    )
-                    cursor.execute("UPDATE users SET notified_expired = 1 WHERE user_id = ?", (user_id,))
-                    conn.commit()
-                except:
-                    pass
-        except Exception as e:
-            logging.error(f"Tekshiruvda xato: {e}")
-        
-        # Har 1 soatda tekshiradi
-        await asyncio.sleep(3600)
+        await message.answer("❌ Kechirasiz, tizimda kichik xatolik yuz berdi. Iltimos, qayta urinib ko'ring.")
 
 async def main():
     logging.basicConfig(level=logging.INFO)
-    print("MILLIY AI (To'liq Premium + Obuna bildirishnomasi) ishga tushdi...")
-    
-    # Orqa fon vazifasini ishga tushirish
-    asyncio.create_task(check_expirations(bot))
-    
+    print("MILLIY AI (Zamonaviy dizayn) ishga tushdi...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
